@@ -7,6 +7,7 @@ Created on Mon Feb 27 11:25:45 2023
 
 import torch
 import gpflow
+import mogptk
 import numpy as np
 from math import *
 import matplotlib.pyplot as plt
@@ -27,15 +28,29 @@ def make_sin_taylor(x, term):
     
     return y
     
-train_x = torch.arange(1,f+1)
+train_x = torch.arange(1,f+1).numpy()
 train_y = torch.zeros([f,d_output])
 y_span = torch.linspace(0,5,d_output)
-
-plt.figure(figsize=[12,8])
 
 for i in range(f):
     
     term = torch.randint(low=1,high=11,size=[1]).item()
     train_y[i] = make_sin_taylor(y_span, term) + 0.2 * torch.randn(size=[d_output])
-    plt.plot(y_span, train_y[i])
     
+names = ["dim" + str(i+1) for i in range(20)]
+y_s = []
+
+for j in range(d_output):
+    y_s.append(train_y[:,j].numpy())
+
+dataset = mogptk.DataSet(train_x, y_s, names=names)
+model = mogptk.MOSM(dataset, Q=d_output)
+
+for channel in dataset:
+    channel.remove_randomly(pct=0.4)
+
+# drop relative ranges to simulate sensor failure
+for i in range(d_output):
+  range_high = np.random.uniform(low=0.1, high=1.0)
+  range_low = range_high - 0.1
+  dataset[i].remove_relative_range(range_low, range_high)
