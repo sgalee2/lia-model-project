@@ -5,52 +5,51 @@ Created on Mon Feb 27 11:25:45 2023
 @author: adayr
 """
 
-import torch
-import gpflow
 import mogptk
 import numpy as np
-from math import *
-import matplotlib.pyplot as plt
-        
 
+from sklearn.datasets import fetch_openml
 
-f, d_output = 150, 20
+def load_mauna_loa_atmospheric_co2():
+    ml_data = fetch_openml(data_id=41187)
+    months = []
+    ppmv_sums = []
+    counts = []
 
-d_input = 1  # number of input dimensions
-L = 2  # number of latent GPs
+    y = ml_data.data['year']
+    m = ml_data.data['month']
+    month_float = y + (m - 1) / 12
+    ppmvs = ml_data.target
 
-def make_sin_taylor(x, term):
+    for month, ppmv in zip(month_float, ppmvs):
+        if not months or month != months[-1]:
+            months.append(month)
+            ppmv_sums.append(ppmv)
+            counts.append(1)
+        else:
+            # aggregate monthly sum to produce average
+            ppmv_sums[-1] += ppmv
+            counts[-1] += 1
 
-    y = torch.zeros_like(x, dtype=float)
-    
-    for k in range(0,term,1):
-        y += ((-1)**k)*(x**(1+2*k))/factorial(1+2*k)
-    
-    return y
-    
-train_x = torch.arange(1,f+1).numpy()
-train_y = torch.zeros([f,d_output])
-y_span = torch.linspace(0,5,d_output)
+    months = np.asarray(months).reshape(-1)
+    avg_ppmvs = np.asarray(ppmv_sums) / counts
+    return months, avg_ppmvs
 
-for i in range(f):
-    
-    term = torch.randint(low=1,high=11,size=[1]).item()
-    train_y[i] = make_sin_taylor(y_span, term) + 0.2 * torch.randn(size=[d_output])
-    
-names = ["dim" + str(i+1) for i in range(20)]
-y_s = []
+# load dataset
+x, y = load_mauna_loa_atmospheric_co2()
 
-for j in range(d_output):
-    y_s.append(train_y[:,j].numpy())
+# stop omde to separate train from test
+stop = 200
 
-dataset = mogptk.DataSet(train_x, y_s, names=names)
-model = mogptk.MOSM(dataset, Q=d_output)
+data = mogptk.Data(x, y, name='Mauna Loa')
+data.remove_range(start=x[stop])
+data.transform(mogptk.TransformDetrend(3))
+data.plot()
 
-for channel in dataset:
-    channel.remove_randomly(pct=0.4)
+# create model
+model = mogptk.SM(data, Q=3)
+model.plot_spectrum(title='SD with random parameters')
 
-# drop relative ranges to simulate sensor failure
-for i in range(d_output):
-  range_high = np.random.uniform(low=0.1, high=1.0)
-  range_low = range_high - 0.1
-  dataset[i].remove_relative_range(range_low, range_high)
+method = 'BNSE'
+model.init_parameters(method)
+model.plot_spectrum(title='PSD with {} initialization'.format(method))
