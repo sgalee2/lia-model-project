@@ -1,11 +1,16 @@
 # %%
 import sys
-sys.path.append("../../lia-model-project")
+sys.path.append("../../../lia-model-project")
+#sys.path.append('C://Users/adayr/OneDrive/Documents/lia_model_project/lia-model-project')
+
+from data.loader_ import *
 # %%
 import torch, gpytorch
+import numpy as np
 from typing import Optional, Tuple, Union
 # %%
 from torch.nn import Parameter
+from gpytorch.module import Module
 
 class MOSM_Kernel(gpytorch.kernels.Kernel):
 
@@ -31,29 +36,24 @@ class MOSM_Kernel(gpytorch.kernels.Kernel):
         self.Q, self.batch_shape, self.input_dims, self.output_dims = num_components, batch_shape, input_dims, output_dims
 
         ### b_n x m x Q
-        weight = Parameter( torch.ones(*self.batch_shape, self.output_dims, self.Q) )
-        phase = Parameter( torch.zeros(*self.batch_shape, self.output_dims, self.Q) )
+        weight = Parameter( torch.rand(*self.batch_shape, self.output_dims, self.Q) )
+        phase = Parameter( torch.rand(*self.batch_shape, self.output_dims, self.Q) )
         self.register_parameter(name="raw_mixture_weights", parameter=weight)
-        self.register_parameter(name="raw_phase", parameter=phase)
+        self.register_parameter(name="phase", parameter=phase)
 
         ### b_n x m x Q x d
-        mean = Parameter( torch.zeros(*self.batch_shape, self.output_dims, self.Q, self.input_dims) )
-        variance = Parameter( torch.zeros(*self.batch_shape, self.output_dims, self.Q, self.input_dims) )
-        delay = Parameter( torch.zeros(*self.batch_shape, self.output_dims, self.Q, self.input_dims) )
+        mean = Parameter( torch.rand(*self.batch_shape, self.output_dims, self.Q, self.input_dims) )
+        variance = Parameter( torch.rand(*self.batch_shape, self.output_dims, self.Q, self.input_dims) )
+        delay = Parameter( torch.rand(*self.batch_shape, self.output_dims, self.Q, self.input_dims) )
         self.register_parameter(name="raw_mixture_means", parameter=mean)
         self.register_parameter(name="raw_mixture_variance", parameter=variance)
-        self.register_parameter(name="raw_delay", parameter=delay)
+        self.register_parameter(name="delay", parameter=delay)
 
         ### parameter constraints
         mixture_constraint = gpytorch.constraints.Positive()
         self.register_constraint("raw_mixture_variance", mixture_constraint)
         self.register_constraint("raw_mixture_means", mixture_constraint)
         self.register_constraint("raw_mixture_weights", mixture_constraint)
-
-        from math import inf
-        unconstrained = gpytorch.constraints.Interval(-100.,100.)
-        self.register_constraint("raw_phase", unconstrained)
-        self.register_constraint("raw_delay", unconstrained)
 
         self.twopi = torch.float_power(2.0*torch.pi, torch.tensor([self.input_dims/2.0]))
 
@@ -96,33 +96,17 @@ class MOSM_Kernel(gpytorch.kernels.Kernel):
             value = torch.as_tensor(value).to(self.raw_mixture_weights)
         self.initialize(raw_mixture_weights=self.raw_mixture_weights_constraint.inverse_transform(value))
 
-    @property
-    def phase(self):
-        return self.raw_phase_constraint.transform(self.raw_phase)
-
-    @phase.setter
-    def phase(self, value: Union[torch.Tensor, float]):
-        self._set_phase(value)
-
-    def _set_phase(self, value: Union[torch.Tensor, float]):
-        if not torch.is_tensor(value):
-            value = torch.as_tensor(value).to(self.raw_phase)
-        self.initialize(raw_phase=self.raw_phase_constraint.inverse_transform(value))
-
-    @property
-    def delay(self):
-        return self.raw_delay_constraint.transform(self.raw_delay)
-
-    @delay.setter
-    def delay(self, value: Union[torch.Tensor, float]):
-        self._set_delay(value)
-
-    def _set_delay(self, value: Union[torch.Tensor, float]):
         if not torch.is_tensor(value):
             value = torch.as_tensor(value).to(self.raw_delay)
         self.initialize(raw_delay=self.raw_delay_constraint.inverse_transform(value))
     
     def Ksub(self, i, j, X1, X2=None):
+        """
+        i,j   -- int:          channels of X1 and X2
+        X1,X2 -- torch.Tensor: inputs, of size (b_n, N/M, d)
+
+        ** NEEDS TO BE VECTORISED **
+        """
         
         if X2 is None:
             tau = (X1.unsqueeze(-2) - X1.unsqueeze(-3)) ### b_n x N x N x d
@@ -130,60 +114,139 @@ class MOSM_Kernel(gpytorch.kernels.Kernel):
             tau = (X1.unsqueeze(-2) - X2.unsqueeze(-3)) ### b_n x N x M x d
 
         if i == j: ### covariance across one channel
+            
             variance = self.mixture_variance[:,i,:,:] ### b_n x Q x d
             mean = self.mixture_means[:,i,:,:] ### b_n x Q x d
             weight = self.mixture_weights[:,i,:] ### b_n x Q
 
-            alpha = weight ** 2 * self.twopi * variance.prod(dim=-1).sqrt()
+            alpha = weight ** 2 * self.twopi * variance.prod(dim=-1).sqrt() ### b_n x Q
 
-            exp_arg = -0.5 * torch.einsum("bnmd,bqd -> bqnm", tau ** 2, variance)
-            exp = torch.exp(exp_arg)
+            exp_arg = -0.5 * torch.einsum("bnmd,bqd -> bqnm", tau ** 2, variance) ### b_n x Q x N x M
+            exp = torch.exp(exp_arg) ### b_n x Q x N x M
 
-            cos_arg = 2.0*torch.pi * torch.einsum("bnmd,bqd->bqnm", tau, mean)
-            cos = torch.cos(cos_arg)
+            cos_arg = 2.0*torch.pi * torch.einsum("bnmd,bqd->bqnm", tau, mean) ### b_n x Q x N x M
+            cos = torch.cos(cos_arg) ### b_n x Q x N x M
 
-            K_q = alpha[:, :, None, None] * exp * cos
+            K_q = alpha[:, :, None, None] * exp * cos ### b_n x Q x N x M
 
         else: ### covariance across two different channels
-
-            var_i, var_j = self.mixture_variance[:,[i,j],:,:] ### both b_n x Q x d
-            mean_i, mean_j = self.mixture_means[:,[i,j],:,:] ### both b_n x Q x d
-            w_i, w_j = self.mixture_weights[:,[i,j],:] ### both b_n x Q
-            theta_i, theta_j = self.delay[:,[i,j],:,:] ### both b_n x Q
-            phi_i, phi_j = self.phase[:,[i,j],:] ### both b_n x Q x d
+            var_i, var_j = [self.mixture_variance[:,f,:,:] for f in [i,j]] ### both b_n x Q x d
+            mean_i, mean_j = [self.mixture_means[:,f,:,:] for f in [i,j]] ### both b_n x Q x d
+            w_i, w_j = [self.mixture_weights[:,f,:] for f in [i,j]] ### both b_n x Q
+            theta_i, theta_j = [self.delay[:,f,:,:] for f in [i,j]] ### both b_n x Q
+            phi_i, phi_j = [self.phase[:,f,:] for f in [i,j]] ### both b_n x Q x d
 
             inv_vars = 1.0/(var_i + var_j) ### b_n x Q x d
             diff_mean = mean_i - mean_j ### b_n x Q x d
             
-            exp_w_arg = -torch.pi ** 2 * torch.sum(diff_mean*inv_vars*diff_mean, dim=-1)
-            w_ij = w_i*w_j*torch.exp(exp_w_arg)
+            exp_w_arg = -torch.pi ** 2 * torch.sum(diff_mean*inv_vars*diff_mean, dim=-1) ### b_n x Q1
+            w_ij = w_i*w_j*torch.exp(exp_w_arg) ### b_n x Q
 
-            mean_ij = inv_vars * (var_i*mean_j + var_j*mean_i)
+            mean_ij = inv_vars * (var_i*mean_j + var_j*mean_i) ### b_n x Q x d
             
-            var_ij = 2.0 * var_i * inv_vars * var_j
+            var_ij = 2.0 * var_i * inv_vars * var_j ### b_n x Q x d
 
-            theta_ij = theta_i - theta_j
-            phi_ij = phi_i - phi_j
+            theta_ij = theta_i - theta_j ### b_n x Q
+            phi_ij = phi_i - phi_j ### b_n x Q x d
 
-            alpha_ij = w_ij * self.twopi * var_ij.prod(dim=-1).sqrt()
+            alpha_ij = w_ij * self.twopi * var_ij.prod(dim=-1).sqrt() ### b_n x Q
             tau_delay = tau[:,None,:,:,:]  - theta_ij[:,:,None,None,:] ### b_n x Q x N x M x d
 
             exp_arg = -0.5 * torch.einsum("bqnmd,bqd -> bqnm", tau_delay ** 2, var_ij) ### b_n x Q x N x M
-            exp = torch.exp(exp_arg)
+            exp = torch.exp(exp_arg) ### b_n x Q x N x M
 
             cos_arg = 2.0*torch.pi * torch.einsum("bqnmd,bqd->bqnm", tau_delay, mean_ij) + phi_ij[:,:,None,None]
             cos = torch.cos(cos_arg) ### b_n x Q x N x M
 
 
-            K_q = alpha_ij[:, :, None, None] * exp * cos
+            K_q = alpha_ij[:, :, None, None] * exp * cos ### b_n x Q x N x M
 
-        return torch.sum(K_q, dim=1)
+        return torch.sum(K_q, dim=1) ### b_n x N x M
+    
+# %%
 
+class MOSM_GP(Module):
+
+    def __init__(self, kernel_module, ):
+        super(MOSM_GP, self).__init__()
+
+        self.kernel = kernel_module
+        gaussian_scale = weight = Parameter( torch.rand(*kernel_module.batch_shape, kernel_module.output_dims) )
+        self.register_parameter(name="raw_gaussian_noise", parameter=gaussian_scale)
+        self.register_constraint("raw_gaussian_noise", gpytorch.constraints.Positive())
+
+    @property
+    def gaussian_noise(self):
+        return self.raw_gaussian_noise_constraint.transform(self.raw_gaussian_noise)
+
+    @gaussian_noise.setter
+    def gaussian_noise(self, value: Union[torch.Tensor, float]):
+        self._set_gaussian_noise(value)
+
+    def _set_gaussian_noise(self, value: Union[torch.Tensor, float]):
+        if not torch.is_tensor(value):
+            value = torch.as_tensor(value).to(self.raw_gaussian_noise)
+        self.initialize(raw_gaussian_noise=self.raw_gaussian_noise_constraint.inverse_transform(value))
+
+    def __call__(self, x_s):
+        res_dims = []
+        for i in range(self.kernel.output_dims):
+            res_dims.append(x_s[i].shape[1])
+        res = torch.empty(sum(res_dims), sum(res_dims))
+
+        m = self.kernel.output_dims        
+        cum_dims = [sum(res_dims[0:i]) for i in range(m+1)]
+        for i in range(0,m):
+            for j in range(i,m):
+                if i==j:
+                    res[cum_dims[i]:cum_dims[i+1], cum_dims[j]:cum_dims[j+1]] = self.kernel.Ksub(i, j, x_s[i], x_s[j]) + gp.gaussian_noise[0,i] * torch.eye(cum_dims[i+1] - cum_dims[i])
+                else:
+                    ksub = self.kernel.Ksub(i, j, x_s[i], x_s[j])[0,:,:]
+                    res[cum_dims[i]:cum_dims[i+1], cum_dims[j]:cum_dims[j+1]] = ksub
+                    res[cum_dims[j]:cum_dims[j+1], cum_dims[i]:cum_dims[i+1]] = ksub.T
+        return res
         
 
+#%%
 if __name__ == "__main__":
-    N, M, b_n, d = 100, 50, 2, 3
-    x = torch.rand(2,100,3)
-    x2 = torch.rand(2,50,3)
-    kern = MOSM_Kernel(5, d, 20, batch_shape=torch.Size([b_n]),ard_num_dims=d)
+    vox_dataset = Vox256Embedding(r"C:\Users\adayr\OneDrive\Documents\lia_model_project\lia-model-project\data\vox_a_matrices\train")
+    index = np.random.randint(low=0, high=vox_dataset.__len__())
+    a_ = vox_dataset.__getitem__(index)
+    f, d = a_.shape 
+    f_span = t.arange(1, f+1,dtype=torch.float64)
+
+    x = f_span[None,:,None]
+    y_s, y_means, y_stds = [], [], []
+    
+    for j in range(d):
+        y = a_[:,j]
+        y_mean, y_std = y.mean(), y.std()
+        y_means.append(y_mean)
+        y_stds.append(y_std)
+        y_s.append((y-y_mean)/y_std)
+    kern = MOSM_Kernel(5, 1, 20, batch_shape=torch.Size([1]), ard_num_dims=1)
+    gp = MOSM_GP(kern)
+# %%
+if __name__ == "__main__":
+    x_s = []
+    for i in range(20):
+        x_s.append(x[0:1,:,:])
+    Y = torch.hstack(y_s).reshape(-1,1)
+# %%
+if __name__ == "__main__":
+    def nll(gram, target):
+        L = torch.linalg.cholesky(gram)
+        ldet = 2*sum(torch.log(L.diag()))
+
+        res = target.T @ torch.cholesky_solve(target, L)
+        return res + ldet
+    optim = torch.optim.Adam(gp.parameters(),lr=0.1)
+    for i in range(100):
+        
+        optim.zero_grad()
+        k = gp(x_s)
+        loss = nll(k, Y)
+        loss.backward()
+        print(i,loss)
+        optim.step()
 # %%
