@@ -11,6 +11,7 @@ from typing import Optional, Tuple, Union
 # %%
 from torch.nn import Parameter
 from gpytorch.module import Module
+from settings import settings
 
 class MOSM_Kernel(gpytorch.kernels.Kernel):
 
@@ -36,15 +37,15 @@ class MOSM_Kernel(gpytorch.kernels.Kernel):
         self.Q, self.batch_shape, self.input_dims, self.output_dims = num_components, batch_shape, input_dims, output_dims
 
         ### b_n x m x Q
-        weight = Parameter( torch.rand(*self.batch_shape, self.output_dims, self.Q) )
-        phase = Parameter( torch.rand(*self.batch_shape, self.output_dims, self.Q) )
+        weight = Parameter( torch.rand(*self.batch_shape, self.output_dims, self.Q,device=settings.device) )
+        phase = Parameter( torch.rand(*self.batch_shape, self.output_dims, self.Q,device=settings.device) )
         self.register_parameter(name="raw_mixture_weights", parameter=weight)
         self.register_parameter(name="phase", parameter=phase)
 
         ### b_n x m x Q x d
-        mean = Parameter( torch.rand(*self.batch_shape, self.output_dims, self.Q, self.input_dims) )
-        variance = Parameter( torch.rand(*self.batch_shape, self.output_dims, self.Q, self.input_dims) )
-        delay = Parameter( torch.rand(*self.batch_shape, self.output_dims, self.Q, self.input_dims) )
+        mean = Parameter( torch.rand(*self.batch_shape, self.output_dims, self.Q, self.input_dims,device=settings.device) )
+        variance = Parameter( torch.rand(*self.batch_shape, self.output_dims, self.Q, self.input_dims,device=settings.device) )
+        delay = Parameter( torch.rand(*self.batch_shape, self.output_dims, self.Q, self.input_dims,device=settings.device) )
         self.register_parameter(name="raw_mixture_means", parameter=mean)
         self.register_parameter(name="raw_mixture_variance", parameter=variance)
         self.register_parameter(name="delay", parameter=delay)
@@ -55,7 +56,7 @@ class MOSM_Kernel(gpytorch.kernels.Kernel):
         self.register_constraint("raw_mixture_means", mixture_constraint)
         self.register_constraint("raw_mixture_weights", mixture_constraint)
 
-        self.twopi = torch.float_power(2.0*torch.pi, torch.tensor([self.input_dims/2.0]))
+        self.twopi = torch.float_power(2.0*torch.pi, torch.tensor([self.input_dims/2.0])).to(settings.device)
 
     @property
     def mixture_variance(self):
@@ -163,50 +164,6 @@ class MOSM_Kernel(gpytorch.kernels.Kernel):
 
         return torch.sum(K_q, dim=1) ### b_n x N x M
     
-# %%
-
-class MOSM_GP(Module):
-
-    def __init__(self, kernel_module, ):
-        super(MOSM_GP, self).__init__()
-
-        self.kernel = kernel_module
-        gaussian_scale = weight = Parameter( torch.rand(*kernel_module.batch_shape, kernel_module.output_dims) )
-        self.register_parameter(name="raw_gaussian_noise", parameter=gaussian_scale)
-        self.register_constraint("raw_gaussian_noise", gpytorch.constraints.Positive())
-
-    @property
-    def gaussian_noise(self):
-        return self.raw_gaussian_noise_constraint.transform(self.raw_gaussian_noise)
-
-    @gaussian_noise.setter
-    def gaussian_noise(self, value: Union[torch.Tensor, float]):
-        self._set_gaussian_noise(value)
-
-    def _set_gaussian_noise(self, value: Union[torch.Tensor, float]):
-        if not torch.is_tensor(value):
-            value = torch.as_tensor(value).to(self.raw_gaussian_noise)
-        self.initialize(raw_gaussian_noise=self.raw_gaussian_noise_constraint.inverse_transform(value))
-
-    def __call__(self, x_s):
-        res_dims = []
-        for i in range(self.kernel.output_dims):
-            res_dims.append(x_s[i].shape[1])
-        res = torch.empty(sum(res_dims), sum(res_dims))
-
-        m = self.kernel.output_dims        
-        cum_dims = [sum(res_dims[0:i]) for i in range(m+1)]
-        for i in range(0,m):
-            for j in range(i,m):
-                if i==j:
-                    res[cum_dims[i]:cum_dims[i+1], cum_dims[j]:cum_dims[j+1]] = self.kernel.Ksub(i, j, x_s[i], x_s[j]) + gp.gaussian_noise[0,i] * torch.eye(cum_dims[i+1] - cum_dims[i])
-                else:
-                    ksub = self.kernel.Ksub(i, j, x_s[i], x_s[j])[0,:,:]
-                    res[cum_dims[i]:cum_dims[i+1], cum_dims[j]:cum_dims[j+1]] = ksub
-                    res[cum_dims[j]:cum_dims[j+1], cum_dims[i]:cum_dims[i+1]] = ksub.T
-        return res
-        
-
 #%%
 if __name__ == "__main__":
     vox_dataset = Vox256Embedding(r"C:\Users\adayr\OneDrive\Documents\lia_model_project\lia-model-project\data\vox_a_matrices\train")
@@ -215,16 +172,18 @@ if __name__ == "__main__":
     f, d = a_.shape 
     f_span = t.arange(1, f+1,dtype=torch.float64)
 
-    x = f_span[None,:,None]
+    x = f_span[None,:,None].to(settings.device)
+    print(x.shape[1])
     y_s, y_means, y_stds = [], [], []
     
     for j in range(d):
-        y = a_[:,j]
+        y = a_[:,j].to(settings.device)
         y_mean, y_std = y.mean(), y.std()
         y_means.append(y_mean)
         y_stds.append(y_std)
         y_s.append((y-y_mean)/y_std)
     kern = MOSM_Kernel(5, 1, 20, batch_shape=torch.Size([1]), ard_num_dims=1)
+    from mosm_model import MOSM_GP
     gp = MOSM_GP(kern)
 # %%
 if __name__ == "__main__":
