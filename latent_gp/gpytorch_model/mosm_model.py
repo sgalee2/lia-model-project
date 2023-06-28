@@ -6,7 +6,7 @@ import torch, gpytorch
 from torch.nn import Parameter
 from gpytorch.module import Module
 from typing import Optional, Tuple, Union
-from settings import settings
+from latent_gp.gpytorch_model.settings import settings
 class MOSM_GP(Module):
 
     def __init__(self, kernel_module, ):
@@ -47,3 +47,4 @@ class MOSM_GP(Module):
                     res[cum_dims[i]:cum_dims[i+1], cum_dims[j]:cum_dims[j+1]] = ksub
                     res[cum_dims[j]:cum_dims[j+1], cum_dims[i]:cum_dims[i+1]] = ksub.T
         return res
+# %%

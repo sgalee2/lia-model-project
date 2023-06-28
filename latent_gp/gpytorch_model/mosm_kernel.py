@@ -11,7 +11,7 @@ from typing import Optional, Tuple, Union
 # %%
 from torch.nn import Parameter
 from gpytorch.module import Module
-from settings import settings
+from latent_gp.gpytorch_model.settings import settings
 
 class MOSM_Kernel(gpytorch.kernels.Kernel):
 
