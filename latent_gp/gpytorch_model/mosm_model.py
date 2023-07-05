@@ -13,9 +13,9 @@ class MOSM_GP(Module):
         super(MOSM_GP, self).__init__()
 
         self.kernel = kernel_module
-        gaussian_scale = weight = Parameter( torch.rand(*kernel_module.batch_shape, kernel_module.output_dims,device=settings.device) )
+        gaussian_scale = weight = Parameter( torch.ones(*kernel_module.batch_shape, kernel_module.output_dims,device=settings.device) )
         self.register_parameter(name="raw_gaussian_noise", parameter=gaussian_scale)
-        self.register_constraint("raw_gaussian_noise", gpytorch.constraints.Positive())
+        self.register_constraint("raw_gaussian_noise", gpytorch.constraints.GreaterThan(0.05))
 
     @property
     def gaussian_noise(self):
